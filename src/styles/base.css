@@ -1,0 +1,51 @@
+:root {
+  --bg-page: #f3f5f9;
+  --bg-card: #ffffff;
+  --bg-panel: #eef1f5;
+  --bg-user: linear-gradient(135deg, #2f80ff, #64a8ff);
+  --text-main: #18202c;
+  --text-sub: #7f8a9a;
+  --line: rgba(24, 32, 44, 0.08);
+  --primary: #2f80ff;
+  --danger: #ff5b57;
+  --shadow:0 2px 4px rgba(0, 0, 0, .12), 0 0 6px rgba(0, 0, 0, .04)
+  --van-primary-color: #2f80ff;
+  --van-danger-color: #ff5b57;
+  --van-text-color: #18202c;
+  --van-field-placeholder-text-color: #9aa6b2;
+  --van-field-input-text-color: #18202c;
+  --van-border-color: rgba(24, 32, 44, 0.08);
+  --van-background-2: #ffffff;
+  --van-cell-background: transparent;
+  --van-font-size-md: 16px;
+  --van-radius-md: 18px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+    sans-serif;
+  background: var(--bg-page);
+  color: var(--text-main);
+}
+
+body {
+  overscroll-behavior: none;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
