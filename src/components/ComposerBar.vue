@@ -328,9 +328,9 @@ export default {
   font-size: 16px;
 }
 
-.overlay-subtitle.danger {
+/* .overlay-subtitle.danger {
   color: #ffe3e2;
-}
+} */
 
 .voice-wave {
   display: flex;
@@ -357,7 +357,7 @@ export default {
 .voice-overlay.cancel .overlay-title,
 .voice-overlay.cancel .wave-bar {
   color: #111;
-  background: rgba(17, 17, 17, 0.9);
+  /* background: rgba(17, 17, 17, 0.9); */
 }
 
 .voice-fade-enter-active,
