@@ -22,6 +22,7 @@ import { cancelRecord, offVoiceResult, onVoiceResult, startRecord, stopRecord } 
 
 const CANCEL_THRESHOLD = 70;
 const MIN_RECORD_DURATION = 600;
+const FINAL_RESULT_WAIT_TIMEOUT = 1200;
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
 
 export default {
@@ -56,10 +57,10 @@ export default {
     };
   },
   created () {
-    this.typingJobs = {};
     this.activeReplyStop = null;
     this.replyTokenSeed = 0;
     this.currentReplyToken = null;
+    this.waitFinalVoiceResolver = null;
   },
   mounted () {
     window.addEventListener("record-volume", this.handleRecordVolume);
@@ -80,12 +81,35 @@ export default {
       container.removeEventListener("scroll", this.handleMessageListScroll);
     }
     this.stopMockRecordLevel();
+    this.resolveFinalVoiceWait();
     this.clearActiveReplyStop();
-    Object.keys(this.typingJobs).forEach(key => {
-      window.clearTimeout(this.typingJobs[key].timer);
-    });
   },
   methods: {
+    resolveFinalVoiceWait () {
+      if (typeof this.waitFinalVoiceResolver === "function") {
+        this.waitFinalVoiceResolver();
+      }
+      this.waitFinalVoiceResolver = null;
+    },
+    waitForFinalVoiceResult () {
+      if (this.voiceFinalText) {
+        return Promise.resolve();
+      }
+
+      return new Promise(resolve => {
+        let timer = null;
+        this.waitFinalVoiceResolver = () => {
+          if (timer) {
+            window.clearTimeout(timer);
+            timer = null;
+          }
+          resolve();
+        };
+        timer = window.setTimeout(() => {
+          this.resolveFinalVoiceWait();
+        }, FINAL_RESULT_WAIT_TIMEOUT);
+      });
+    },
     isDebugEnabled () {
       if (typeof window !== "undefined" && typeof window.__WXGC_DEBUG__ === "boolean") {
         return window.__WXGC_DEBUG__;
@@ -131,7 +155,6 @@ export default {
       this.clearActiveReplyStop();
       stop("manual-stop");
       if (replyMessageId) {
-        this.stopTypingMessage(replyMessageId);
         const currentMessage = this.messages.find(item => item.id === replyMessageId);
         const currentText = currentMessage && typeof currentMessage.text === "string"
           ? currentMessage.text.trim()
@@ -222,57 +245,6 @@ export default {
 
       this.$nextTick(() => this.scrollToBottom(false));
     },
-    stopTypingMessage (id) {
-      if (!this.typingJobs[id]) {
-        return;
-      }
-      window.clearTimeout(this.typingJobs[id].timer);
-      delete this.typingJobs[id];
-    },
-    animateAssistantText (id, targetText) {
-      const finalText = targetText || "";
-      const currentJob = this.typingJobs[id];
-
-      if (currentJob) {
-        currentJob.targetText = finalText;
-        return;
-      }
-
-      this.typingJobs[id] = {
-        targetText: finalText,
-        timer: null
-      };
-
-      const step = () => {
-        const message = this.messages.find(item => item.id === id);
-        const job = this.typingJobs[id];
-
-        if (!message || !job) {
-          this.stopTypingMessage(id);
-          return;
-        }
-
-        const currentText = message.text || "";
-        const nextTarget = job.targetText || "";
-
-        if (currentText === nextTarget) {
-          this.stopTypingMessage(id);
-          return;
-        }
-
-        const nextText = nextTarget.slice(0, currentText.length + 2);
-        this.updateMessageById(id, {
-          type: "text",
-          loading: false,
-          text: nextText,
-          newsList: []
-        });
-
-        job.timer = window.setTimeout(step, 18);
-      };
-
-      step();
-    },
     // 处理发送文本/语音消息
     async handleSendText (text) {
       const cleanText = (text || "").trim();
@@ -306,7 +278,6 @@ export default {
             }
             //新闻卡片
             if (payload.type === "news") {
-              this.stopTypingMessage(replyMessageId);
               this.updateMessageById(replyMessageId, {
                 type: "news",
                 loading: false,
@@ -316,7 +287,12 @@ export default {
               return;
             }
             //否则文本流
-            this.animateAssistantText(replyMessageId, payload.text || "");
+            this.updateMessageById(replyMessageId, {
+              type: "text",
+              loading: false,
+              text: payload.text || "",
+              newsList: []
+            });
           }
         });
         this.clearActiveReplyStop();
@@ -325,7 +301,6 @@ export default {
         }
 
         if (result.stopped) {
-          this.stopTypingMessage(replyMessageId);
           const current = this.messages.find(item => item.id === replyMessageId);
           const currentText = current && current.text ? current.text.trim() : "";
           this.updateMessageById(replyMessageId, {
@@ -335,7 +310,6 @@ export default {
             newsList: []
           });
         } else if (result.type === "news") {
-          this.stopTypingMessage(replyMessageId);
           this.updateMessageById(replyMessageId, {
             type: "news",
             loading: false,
@@ -343,14 +317,18 @@ export default {
             newsList: result.newsList || []
           });
         } else {
-          this.animateAssistantText(replyMessageId, result.text || "暂时没有获取到回复内容。");
+          this.updateMessageById(replyMessageId, {
+            type: "text",
+            loading: false,
+            text: result.text || "暂时没有获取到回复内容。",
+            newsList: []
+          });
         }
       } catch (error) {
         this.clearActiveReplyStop();
         if (this.currentReplyToken !== replyToken) {
           return;
         }
-        this.stopTypingMessage(replyMessageId);
         this.updateMessageById(replyMessageId, {
           type: "text",
           loading: false,
@@ -371,6 +349,7 @@ export default {
       this.voiceRecognizingText = nextText;
       if (isFinal && nextText) {
         this.voiceFinalText = nextText;
+        this.resolveFinalVoiceWait();
       }
     },
     normalizeRecordLevel (level) {
@@ -449,16 +428,20 @@ export default {
       this.stopMockRecordLevel();
       this.debugLog("voice:stop", { duration });
       if (duration < MIN_RECORD_DURATION) {
+        this.resolveFinalVoiceWait();
         this.voiceRecognizingText = "";
         this.voiceFinalText = "";
         return;
       }
+      await this.waitForFinalVoiceResult();
       const speechText = (this.voiceFinalText || this.voiceRecognizingText || (result && result.text) || "").trim();
       if (!speechText) {
+        this.resolveFinalVoiceWait();
         this.voiceRecognizingText = "";
         this.voiceFinalText = "";
         return;
       }
+      this.resolveFinalVoiceWait();
       this.voiceRecognizingText = "";
       this.voiceFinalText = "";
       await this.handleSendText(speechText);
@@ -470,6 +453,7 @@ export default {
         return;
       }
       await cancelRecord();
+      this.resolveFinalVoiceWait();
       this.recordState = "idle";
       this.recordStartAt = 0;
       this.stopMockRecordLevel();

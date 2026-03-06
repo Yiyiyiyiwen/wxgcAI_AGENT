@@ -1,10 +1,10 @@
 module.exports = {
-  publicPath: '/',
+  publicPath: process.env.NODE_ENV === "development" ? "/" : "/wxgc-agent/",
   productionSourceMap: false,
   devServer: {
     proxy: {
-      "/chat": {
-        target: process.env.VUE_APP_CHAT_PROXY_TARGET || "https://xibao.llteac.cn",
+      "/wxgc": {
+        target: process.env.VUE_APP_CHAT_PROXY_TARGET || "https://workbooks.wxrb.com",
         changeOrigin: true,
         secure: false
       }

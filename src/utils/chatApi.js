@@ -105,6 +105,48 @@ function normalizeNewsList (value) {
     .filter(item => item.title);
 }
 
+function parseJsonFromText (value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return null;
+  }
+
+  const direct = tryParseJson(raw);
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
+
+  // 兼容双重包裹：先 parse 成字符串，再 parse 成对象。
+  if (typeof direct === "string") {
+    const nested = tryParseJson(direct);
+    if (nested && typeof nested === "object") {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function applyNewsPayload (normalizedPayload, state, onEvent) {
+  state.type = "news";
+  state.newsList = normalizeNewsList(normalizedPayload.news_list);
+  state.done = Boolean(normalizedPayload.done);
+  notify(onEvent, {
+    type: "news",
+    newsList: state.newsList,
+    done: state.done
+  });
+}
+
+function tryApplyNewsFromAccumulatedText (state, onEvent) {
+  const maybePayload = parseJsonFromText(state.text);
+  if (!maybePayload || maybePayload.status !== "wxgc_news_card") {
+    return false;
+  }
+  applyNewsPayload(maybePayload, state, onEvent);
+  return true;
+}
+
 function notify (onEvent, payload) {
   if (typeof onEvent === "function") {
     onEvent(payload);
@@ -118,20 +160,17 @@ function applyPayload (payload, state, onEvent) {
   }
 
   if (normalizedPayload.status === "wxgc_news_card") {
-    state.type = "news";
-    state.newsList = normalizeNewsList(normalizedPayload.news_list);
-    state.done = Boolean(normalizedPayload.done);
-    notify(onEvent, {
-      type: "news",
-      newsList: state.newsList,
-      done: state.done
-    });
+    applyNewsPayload(normalizedPayload, state, onEvent);
     return;
   }
 
   if (typeof normalizedPayload.text === "string") {
     state.type = "text";
     state.text += normalizedPayload.text;
+    // 兼容后端把新闻 JSON 以 text 分片流式下发的场景。
+    if (tryApplyNewsFromAccumulatedText(state, onEvent)) {
+      return;
+    }
     notify(onEvent, {
       type: "text",
       text: normalizeText(state.text),
@@ -157,6 +196,45 @@ function buildChatUrl (message, sessionId) {
   return url.toString();
 }
 
+function parseSseEventBlock (block) {
+  const lines = block.split(/\r?\n/);
+  let eventName = "";
+  const dataLines = [];
+
+  lines.forEach(line => {
+    if (!line || line.startsWith(":")) {
+      return;
+    }
+
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    const rawValue = separator === -1 ? "" : line.slice(separator + 1);
+    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+
+    if (field === "event") {
+      eventName = value;
+      return;
+    }
+    if (field === "data") {
+      dataLines.push(value);
+    }
+  });
+
+  return {
+    eventName,
+    data: dataLines.join("\n")
+  };
+}
+
+function extractSseBlocks (buffer) {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const blocks = normalized.split("\n\n");
+  return {
+    blocks: blocks.slice(0, -1),
+    rest: blocks[blocks.length - 1] || ""
+  };
+}
+
 // 核心处理流式文本/新闻卡片
 export async function sendChatMessage ({ message, sessionId, onEvent, onRegisterStop }) {
   const state = {
@@ -168,10 +246,11 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
   };
 
   return new Promise((resolve, reject) => {
-    const eventSource = new window.EventSource(buildChatUrl(message, sessionId));
+    const controller = new window.AbortController();
     let settled = false;
     let connectTimer = null;
     let idleTimer = null;
+    let responseStarted = false;
 
     debugLog("request:start", { sessionId, message });
 
@@ -184,7 +263,7 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
         window.clearTimeout(idleTimer);
         idleTimer = null;
       }
-      eventSource.close();
+      controller.abort();
     };
 
     const scheduleIdleTimeout = () => {
@@ -251,33 +330,6 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
       }
     };
 
-    eventSource.addEventListener("text", event => {
-      handlePayload(tryParseJson(event.data));
-    });
-
-    eventSource.addEventListener("done", event => {
-      const payload = tryParseJson(event.data) || { done: true };
-      handlePayload(payload);
-    });
-
-    eventSource.onmessage = event => {
-      handlePayload(tryParseJson(event.data));
-    };
-
-    eventSource.onerror = () => {
-      if (settled) {
-        return;
-      }
-      if (state.done) {
-        finish();
-        return;
-      }
-      cleanup();
-      settled = true;
-      debugLog("request:error", { sessionId });
-      reject(new Error("聊天流连接中断，请稍后再试。"));
-    };
-
     connectTimer = window.setTimeout(() => {
       if (settled) {
         return;
@@ -287,5 +339,136 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
       debugLog("request:connect-timeout", { sessionId, connectMs: CHAT_CONNECT_TIMEOUT_MS });
       reject(new Error("聊天连接超时，请稍后重试。"));
     }, CHAT_CONNECT_TIMEOUT_MS);
+
+    const headers = {
+      Accept: "text/event-stream"
+    };
+    debugLog("request:fetch-config", {
+      sessionId,
+      url: buildChatUrl(message, sessionId),
+      method: "GET",
+      headers
+    });
+
+    window.fetch(buildChatUrl(message, sessionId), {
+      method: "GET",
+      headers,
+      signal: controller.signal
+    }).then(async response => {
+      if (settled) {
+        return;
+      }
+
+      responseStarted = true;
+      if (!response.ok) {
+        let errorBody = "";
+        try {
+          errorBody = await response.text();
+        } catch (error) {
+          errorBody = "";
+        }
+        cleanup();
+        settled = true;
+        debugLog("request:http-error", {
+          sessionId,
+          status: response.status,
+          statusText: response.statusText,
+          responseHeaders: Object.fromEntries(response.headers.entries()),
+          responseBodySnippet: (errorBody || "").slice(0, 300)
+        });
+        reject(new Error(`聊天接口请求失败（${response.status}）`));
+        return;
+      }
+
+      if (!response.body) {
+        cleanup();
+        settled = true;
+        debugLog("request:empty-body", { sessionId });
+        reject(new Error("聊天接口未返回流式数据。"));
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+
+      try {
+        while (!settled) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const extracted = extractSseBlocks(buffer);
+          buffer = extracted.rest;
+
+          extracted.blocks.forEach(block => {
+            const trimmed = block.trim();
+            if (!trimmed) {
+              return;
+            }
+            const parsed = parseSseEventBlock(trimmed);
+            const payload = tryParseJson(parsed.data);
+            if (parsed.eventName === "done") {
+              handlePayload(payload || { done: true });
+              return;
+            }
+            handlePayload(payload);
+          });
+        }
+
+        const tail = buffer.trim();
+        if (!settled && tail) {
+          const parsed = parseSseEventBlock(tail);
+          const payload = tryParseJson(parsed.data);
+          if (parsed.eventName === "done") {
+            handlePayload(payload || { done: true });
+          } else {
+            handlePayload(payload);
+          }
+        }
+
+        if (!settled) {
+          if (state.done) {
+            finish();
+          } else {
+            cleanup();
+            settled = true;
+            debugLog("request:stream-ended-early", { sessionId });
+            reject(new Error("聊天流连接中断，请稍后再试。"));
+          }
+        }
+      } catch (error) {
+        if (settled) {
+          return;
+        }
+        cleanup();
+        settled = true;
+        if (error && error.name === "AbortError" && state.stopped) {
+          return;
+        }
+        debugLog("request:error", { sessionId });
+        reject(new Error("聊天流连接中断，请稍后再试。"));
+      }
+    }).catch(error => {
+      if (settled) {
+        return;
+      }
+      cleanup();
+      settled = true;
+      if (error && error.name === "AbortError" && state.stopped) {
+        return;
+      }
+      debugLog("request:fetch-error", {
+        sessionId,
+        message: error && error.message ? error.message : ""
+      });
+      if (!responseStarted) {
+        reject(new Error("聊天连接失败，请检查网络或网关配置。"));
+        return;
+      }
+      reject(new Error("聊天流连接中断，请稍后再试。"));
+    });
   });
 }
