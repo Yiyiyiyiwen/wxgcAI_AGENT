@@ -1,9 +1,23 @@
 <template>
   <main class="message-list">
     <div v-for="message in messages" :key="message.id" class="message-row" :class="'is-' + message.role">
-      <div class="bubble" :class="{ loading: message.loading, 'news-bubble': isNewsMessage(message) }">
-        <div v-if="message.role === 'assistant' && !isNewsMessage(message)" class="tag">{{ message.tag }}</div>
-        <div v-if="message.loading" class="loading-dots" aria-label="回复生成中">
+      <div class="bubble" :class="{
+        loading: message.loading,
+        'news-bubble': isNewsMessage(message),
+        'has-thought-toggle': message.role === 'assistant' && hasThoughts(message)
+      }">
+        <div v-if="message.role === 'assistant' && !isNewsMessage(message) && !hasThoughts(message)" class="tag">
+          {{ message.tag }}
+        </div>
+        <button v-if="message.role === 'assistant' && hasThoughts(message)" class="thought-toggle" type="button"
+          :aria-label="isThoughtExpanded(message) ? '收起思考过程' : '展开思考过程'" @click="toggleThought(message.id)">
+          <van-icon :name="isThoughtExpanded(message) ? 'arrow-up' : 'arrow-down'" />
+        </button>
+        <section v-if="message.role === 'assistant' && hasThoughts(message) && isThoughtExpanded(message)" class="thought-block">
+          <div v-if="!message.text" class="thought-title">正在思考中...</div>
+          <div class="thought-content">{{ message.thoughts }}</div>
+        </section>
+        <div v-if="message.loading && !message.text && !hasThoughts(message)" class="loading-dots" aria-label="回复生成中">
           <span></span>
           <span></span>
           <span></span>
@@ -40,9 +54,79 @@ export default {
       required: true
     }
   },
+  data () {
+    return {
+      thoughtExpandMap: {},
+      thoughtManualMap: {},
+      previousTextMap: {}
+    };
+  },
+  watch: {
+    messages: {
+      immediate: true,
+      deep: true,
+      handler (nextMessages) {
+        const activeIds = {};
+        nextMessages.forEach(message => {
+          const id = String(message.id);
+          activeIds[id] = true;
+          const previousText = this.previousTextMap[id] || "";
+          const currentText = message && typeof message.text === "string" ? message.text : "";
+          const hasThought = this.hasThoughts(message);
+
+          if (!Object.prototype.hasOwnProperty.call(this.thoughtExpandMap, id)) {
+            this.$set(this.thoughtExpandMap, id, hasThought && !currentText);
+          }
+          if (!Object.prototype.hasOwnProperty.call(this.thoughtManualMap, id)) {
+            this.$set(this.thoughtManualMap, id, false);
+          }
+
+          if (!previousText && currentText && hasThought) {
+            this.$set(this.thoughtExpandMap, id, false);
+            this.$set(this.thoughtManualMap, id, false);
+          }
+
+          this.$set(this.previousTextMap, id, currentText);
+        });
+
+        Object.keys(this.thoughtExpandMap).forEach(id => {
+          if (!activeIds[id]) {
+            this.$delete(this.thoughtExpandMap, id);
+          }
+        });
+        Object.keys(this.thoughtManualMap).forEach(id => {
+          if (!activeIds[id]) {
+            this.$delete(this.thoughtManualMap, id);
+          }
+        });
+        Object.keys(this.previousTextMap).forEach(id => {
+          if (!activeIds[id]) {
+            this.$delete(this.previousTextMap, id);
+          }
+        });
+      }
+    }
+  },
   methods: {
     isNewsMessage (message) {
       return message && message.type === "news";
+    },
+    hasThoughts (message) {
+      return Boolean(message && typeof message.thoughts === "string" && message.thoughts.trim());
+    },
+    isThoughtExpanded (message) {
+      const id = String(message.id);
+      if (this.thoughtManualMap[id]) {
+        return Boolean(this.thoughtExpandMap[id]);
+      }
+      const hasText = Boolean(message && message.text);
+      return Boolean(this.thoughtExpandMap[id] || (this.hasThoughts(message) && !hasText));
+    },
+    toggleThought (messageId) {
+      const id = String(messageId);
+      const next = !this.thoughtExpandMap[id];
+      this.$set(this.thoughtExpandMap, id, next);
+      this.$set(this.thoughtManualMap, id, true);
     },
     handleNewsClick (news) {
       openNewsDetail(news);
@@ -75,11 +159,20 @@ export default {
 }
 
 .bubble {
+  position: relative;
   max-width: 82%;
   padding: 14px 16px;
   border-radius: 22px;
   line-height: 1.6;
   box-shadow: var(--shadow);
+}
+
+.bubble.has-thought-toggle {
+  padding-top: 28px;
+}
+
+.bubble.has-thought-toggle .text {
+  margin-top: 8px;
 }
 
 .is-assistant .bubble {
@@ -101,6 +194,43 @@ export default {
   margin-bottom: 8px;
   color: var(--text-sub);
   font-size: 13px;
+}
+
+.thought-toggle {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.05);
+  color: #76849a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.thought-block {
+  margin: 4px 2px 10px;
+  padding: 0 0 0 10px;
+  border-left: 2px solid rgba(120, 132, 154, 0.45);
+}
+
+.thought-title {
+  color: #65748b;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.thought-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #8a95a8;
+  font-size: 14px;
+  line-height: 1.8;
 }
 
 .text {

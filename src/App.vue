@@ -51,7 +51,8 @@ export default {
           id: 1,
           role: "assistant",
           tag: "禧宝",
-          text: "你好！我是禧宝，无锡日报报业集团的AI代言人。有什么问题我可以帮助你吗？"
+          text: "你好！我是禧宝，无锡日报报业集团的AI代言人。有什么问题我可以帮助你吗？",
+          thoughts: ""
         }
       ]
     };
@@ -163,6 +164,7 @@ export default {
           type: "text",
           loading: false,
           text: currentText || "回答已终止。",
+          thoughts: "",
           newsList: []
         });
       }
@@ -212,6 +214,7 @@ export default {
         tag: tag || "",
         type: "text",
         loading: false,
+        thoughts: "",
         newsList: []
       });
       this.$nextTick(() => this.scrollToBottom(false));
@@ -224,6 +227,7 @@ export default {
         text: "",
         type: "text",
         loading: true,
+        thoughts: "",
         newsList: []
       };
 
@@ -261,6 +265,10 @@ export default {
       const replyToken = ++this.replyTokenSeed;
       this.activeReplyMessageId = replyMessageId;
       this.currentReplyToken = replyToken;
+      const requestStartAt = window.performance && typeof window.performance.now === "function"
+        ? window.performance.now()
+        : Date.now();
+      let firstChunkLogged = false;
       this.debugLog("reply:start", { messageId: replyMessageId, textLength: cleanText.length });
 
       try {
@@ -276,12 +284,25 @@ export default {
             if (this.currentReplyToken !== replyToken) {
               return;
             }
+            if (!firstChunkLogged) {
+              firstChunkLogged = true;
+              const now = window.performance && typeof window.performance.now === "function"
+                ? window.performance.now()
+                : Date.now();
+              const elapsed = Math.max(0, now - requestStartAt);
+              // eslint-disable-next-line no-console
+              console.info(`[WXGC] 首包返回耗时: ${elapsed.toFixed(0)}ms`, {
+                type: payload.type,
+                done: Boolean(payload.done)
+              });
+            }
             //新闻卡片
             if (payload.type === "news") {
               this.updateMessageById(replyMessageId, {
                 type: "news",
                 loading: false,
                 text: "",
+                thoughts: payload.thoughts || "",
                 newsList: payload.newsList || []
               });
               return;
@@ -291,11 +312,20 @@ export default {
               type: "text",
               loading: false,
               text: payload.text || "",
+              thoughts: payload.thoughts || "",
               newsList: []
             });
           }
         });
         this.clearActiveReplyStop();
+        if (!firstChunkLogged) {
+          const now = window.performance && typeof window.performance.now === "function"
+            ? window.performance.now()
+            : Date.now();
+          const elapsed = Math.max(0, now - requestStartAt);
+          // eslint-disable-next-line no-console
+          console.info(`[WXGC] 未收到流式首包，等待到请求结束耗时: ${elapsed.toFixed(0)}ms`);
+        }
         if (this.currentReplyToken !== replyToken) {
           return;
         }
@@ -307,6 +337,7 @@ export default {
             type: "text",
             loading: false,
             text: currentText || "回答已终止。",
+            thoughts: "",
             newsList: []
           });
         } else if (result.type === "news") {
@@ -314,6 +345,7 @@ export default {
             type: "news",
             loading: false,
             text: "",
+            thoughts: result.thoughts || "",
             newsList: result.newsList || []
           });
         } else {
@@ -321,6 +353,7 @@ export default {
             type: "text",
             loading: false,
             text: result.text || "暂时没有获取到回复内容。",
+            thoughts: result.thoughts || "",
             newsList: []
           });
         }
@@ -333,6 +366,7 @@ export default {
           type: "text",
           loading: false,
           text: error && error.message ? error.message : "聊天接口调用失败，请稍后再试。",
+          thoughts: "",
           newsList: []
         });
       } finally {

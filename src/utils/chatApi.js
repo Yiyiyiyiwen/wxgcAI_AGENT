@@ -1,6 +1,10 @@
-const CHAT_API_BASE = process.env.VUE_APP_CHAT_API_BASE || "/chat";
-const CHAT_CONNECT_TIMEOUT_MS = 45000;
-const CHAT_IDLE_TIMEOUT_MS = 45000;
+const CHAT_AGENT_STREAM_URL = process.env.VUE_APP_CHAT_AGENT_STREAM_URL || "/wxgc/content/mb_api/chat/agent/stream";
+const CHAT_WORKFLOW_STREAM_URL = process.env.VUE_APP_CHAT_WORKFLOW_STREAM_URL || "/wxgc/content/mb_api/chat/stream";
+const CHAT_ENDPOINT_TYPE = (process.env.VUE_APP_CHAT_ENDPOINT_TYPE || "agent").toLowerCase();
+const CHAT_CONNECT_TIMEOUT_MS = 120000;
+const CHAT_IDLE_TIMEOUT_MS = 120000;
+const CHAT_STREAM_MOCK = String(process.env.VUE_APP_CHAT_STREAM_MOCK || "").toLowerCase() === "true";
+const CHAT_STREAM_MOCK_INTERVAL_MS = Number(process.env.VUE_APP_CHAT_STREAM_MOCK_INTERVAL_MS || 120);
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
 
 function isDebugEnabled () {
@@ -134,6 +138,7 @@ function applyNewsPayload (normalizedPayload, state, onEvent) {
   notify(onEvent, {
     type: "news",
     newsList: state.newsList,
+    thoughts: normalizeText(state.thoughts),
     done: state.done
   });
 }
@@ -159,21 +164,34 @@ function applyPayload (payload, state, onEvent) {
     return;
   }
 
-  if (normalizedPayload.status === "wxgc_news_card") {
-    applyNewsPayload(normalizedPayload, state, onEvent);
-    return;
+  const hasThoughts = typeof normalizedPayload.thoughts === "string";
+  const hasText = typeof normalizedPayload.text === "string";
+  let emitted = false;
+
+  if (hasThoughts) {
+    state.thoughts += normalizedPayload.thoughts;
   }
 
-  if (typeof normalizedPayload.text === "string") {
+  if (normalizedPayload.status === "wxgc_news_card") {
+    applyNewsPayload(normalizedPayload, state, onEvent);
+    emitted = true;
+  }
+
+  if (!emitted && hasText) {
     state.type = "text";
     state.text += normalizedPayload.text;
     // 兼容后端把新闻 JSON 以 text 分片流式下发的场景。
     if (tryApplyNewsFromAccumulatedText(state, onEvent)) {
-      return;
+      emitted = true;
     }
+  }
+
+  if (!emitted && (hasThoughts || hasText)) {
     notify(onEvent, {
-      type: "text",
+      type: state.type,
       text: normalizeText(state.text),
+      newsList: state.newsList,
+      thoughts: normalizeText(state.thoughts),
       done: Boolean(normalizedPayload.done)
     });
   }
@@ -184,13 +202,15 @@ function applyPayload (payload, state, onEvent) {
       type: state.type,
       text: normalizeText(state.text),
       newsList: state.newsList,
+      thoughts: normalizeText(state.thoughts),
       done: true
     });
   }
 }
 
-function buildChatUrl (message, sessionId) {
-  const url = new URL(`${CHAT_API_BASE}/stream`, window.location.origin);
+function buildChatUrl (message, sessionId, endpointType) {
+  const streamUrl = endpointType === "workflow" ? CHAT_WORKFLOW_STREAM_URL : CHAT_AGENT_STREAM_URL;
+  const url = new URL(streamUrl, window.location.origin);
   url.searchParams.set("message", message);
   url.searchParams.set("sessionId", sessionId);
   return url.toString();
@@ -235,17 +255,108 @@ function extractSseBlocks (buffer) {
   };
 }
 
+const MOCK_STREAM_EVENTS = [
+  { event: "text", data: { text: "您好", done: false } },
+  { event: "text", data: { text: "！", done: false } },
+  { event: "text", data: { text: "我是", done: false } },
+  { event: "text", data: { text: "禧", done: false } },
+  { event: "text", data: { text: "宝，无锡日报", done: false } },
+  { event: "text", data: { text: "报业集团的智能", done: false } },
+  { event: "text", data: { text: "助手。\n\n今天想", done: false } },
+  { event: "text", data: { text: "了解无锡哪些方面的", done: false } },
+  { event: "text", data: { text: "资讯呢？可以", done: false } },
+  { event: "text", data: { text: "告诉我具体需求，", done: false } },
+  { event: "text", data: { text: "比如：\n- 最", done: false } },
+  { event: "text", data: { text: "新政策解读", done: false } },
+  { event: "text", data: { text: "\n- 民", done: false } },
+  { event: "text", data: { text: "生新闻\n-", done: false } },
+  { event: "text", data: { text: " 城市", done: false } },
+  { event: "text", data: { text: "建设进展\n-", done: false } },
+  { event: "text", data: { text: " 教育医疗", done: false } },
+  { event: "text", data: { text: "动态\n\n或者直接", done: false } },
+  { event: "text", data: { text: "说说您关心", done: false } },
+  { event: "text", data: { text: "的话题，我来", done: false } },
+  { event: "text", data: { text: "帮您查找相关信息", done: false } },
+  { event: "text", data: { text: "～", done: false } },
+  { event: "done", data: { done: true } }
+];
+
 // 核心处理流式文本/新闻卡片
-export async function sendChatMessage ({ message, sessionId, onEvent, onRegisterStop }) {
+export async function sendChatMessage ({ message, sessionId, onEvent, onRegisterStop, endpointType = CHAT_ENDPOINT_TYPE }) {
   const state = {
     type: "text",
     text: "",
+    thoughts: "",
     newsList: [],
     done: false,
     stopped: false
   };
 
   return new Promise((resolve, reject) => {
+    if (CHAT_STREAM_MOCK) {
+      let settled = false;
+      let timer = null;
+      let eventIndex = 0;
+
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          window.clearTimeout(timer);
+          timer = null;
+        }
+        resolve({
+          type: state.type,
+          text: normalizeText(state.text),
+          thoughts: normalizeText(state.thoughts),
+          newsList: state.newsList,
+          done: state.done,
+          stopped: state.stopped
+        });
+      };
+
+      const stop = reason => {
+        if (settled) {
+          return;
+        }
+        state.stopped = true;
+        debugLog("request:mock-stopped", { sessionId, reason: reason || "manual" });
+        finish();
+      };
+
+      if (typeof onRegisterStop === "function") {
+        onRegisterStop(stop);
+      }
+
+      const step = () => {
+        if (settled) {
+          return;
+        }
+        const current = MOCK_STREAM_EVENTS[eventIndex++];
+        if (!current) {
+          finish();
+          return;
+        }
+        applyPayload(current.data, state, onEvent);
+        if (state.done) {
+          finish();
+          return;
+        }
+        timer = window.setTimeout(step, CHAT_STREAM_MOCK_INTERVAL_MS);
+      };
+
+      debugLog("request:mock-start", {
+        sessionId,
+        message,
+        intervalMs: CHAT_STREAM_MOCK_INTERVAL_MS,
+        events: MOCK_STREAM_EVENTS.length
+      });
+      timer = window.setTimeout(step, CHAT_STREAM_MOCK_INTERVAL_MS);
+      return;
+    }
+
     const controller = new window.AbortController();
     let settled = false;
     let connectTimer = null;
@@ -292,6 +403,7 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
       resolve({
         type: state.type,
         text: normalizeText(state.text),
+        thoughts: normalizeText(state.thoughts),
         newsList: state.newsList,
         done: false,
         stopped: true
@@ -312,6 +424,7 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
       resolve({
         type: state.type,
         text: normalizeText(state.text),
+        thoughts: normalizeText(state.thoughts),
         newsList: state.newsList,
         done: state.done,
         stopped: state.stopped
@@ -345,12 +458,13 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
     };
     debugLog("request:fetch-config", {
       sessionId,
-      url: buildChatUrl(message, sessionId),
+      url: buildChatUrl(message, sessionId, endpointType),
+      endpointType,
       method: "GET",
       headers
     });
 
-    window.fetch(buildChatUrl(message, sessionId), {
+    window.fetch(buildChatUrl(message, sessionId, endpointType), {
       method: "GET",
       headers,
       signal: controller.signal
