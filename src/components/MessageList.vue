@@ -43,7 +43,6 @@
 </template>
 
 <script>
-import { openNewsDetail } from "../utils/appBridge";
 import { sanitizeRichText } from "../utils/richText";
 
 export default {
@@ -136,7 +135,7 @@ export default {
       this.$set(this.thoughtManualMap, id, true);
     },
     handleNewsClick (news) {
-      openNewsDetail(news);
+      this.$emit("news-click", news);
     },
     formatAssistantText (value) {
       return sanitizeRichText(value);

@@ -102,12 +102,13 @@ function normalizeNewsList (value, cardSource) {
           title: item.title || item.news_title || item.name || "",
           contentId: item.content_id || item.contentId || "",
           siteId: item.site_id || item.siteId || "",
-          source: item.source || cardSource || "",
+          source: item.source || "",
+          cardSource: cardSource || "",
           sourceLink: item.source_link || item.sourceLink || ""
         };
       }
 
-      return { title: "", contentId: "", siteId: "", source: cardSource || "", sourceLink: "" };
+      return { title: "", contentId: "", siteId: "", source: "", cardSource: cardSource || "", sourceLink: "" };
     })
     .filter(item => item.title);
 }

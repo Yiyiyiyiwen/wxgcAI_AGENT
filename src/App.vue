@@ -1,7 +1,7 @@
 <template>
   <div class="page">
     <!-- <AppHeader /> -->
-    <MessageList ref="messageList" :messages="messages" />
+    <MessageList ref="messageList" :messages="messages" @news-click="handleNewsClick" />
     <button v-if="showScrollBottom" class="scroll-bottom-btn" type="button" aria-label="滚动到底部"
       @click="scrollToBottom(true)">
       <van-icon name="arrow-down" />
@@ -10,6 +10,12 @@
       :can-stop-reply="isReplying" :voice-text="voiceRecognizingText" @toggle-input="toggleInputMode"
       @send-text="handleSendText" @record-start="handleRecordStart" @record-move="handleRecordMove"
       @record-end="handleRecordEnd" @record-cancel="handleRecordCancel" @stop-reply="handleStopReply" />
+    <section v-if="newsFrameVisible" class="news-frame-layer">
+      <button class="news-frame-back" type="button" aria-label="关闭新闻详情" @click="closeNewsFrame">
+        <van-icon name="arrow-left" />
+      </button>
+      <iframe class="news-frame" :src="newsFrameUrl" title="新闻详情"></iframe>
+    </section>
   </div>
 </template>
 
@@ -23,6 +29,8 @@ import { cancelRecord, offVoiceResult, onVoiceResult, startRecord, stopRecord } 
 const CANCEL_THRESHOLD = 70;
 const MIN_RECORD_DURATION = 600;
 const FINAL_RESULT_WAIT_TIMEOUT = 1200;
+const NEWS_DETAIL_BASE_URL = process.env.VUE_APP_NEWS_DETAIL_BASE_URL || "https://workbooks.wxrb.com";
+const NEWS_DETAIL_PATH = "/wxgc-h5/article.html";
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
 
 export default {
@@ -42,6 +50,8 @@ export default {
       voiceRecognizingText: "",
       voiceFinalText: "",
       showScrollBottom: false,
+      newsFrameVisible: false,
+      newsFrameUrl: "",
       sessionId: createSessionId(),
       isReplying: false,
       activeReplyMessageId: null,
@@ -180,6 +190,37 @@ export default {
         return;
       }
       this.inputMode = !this.inputMode;
+    },
+    buildNewsDetailUrl (news) {
+      const source = news && typeof news.cardSource === "string"
+        ? news.cardSource.toLowerCase()
+        : (news && typeof news.source === "string" ? news.source.toLowerCase() : "");
+      const sourceLink = news && (news.sourceLink || news.source_link) ? String(news.sourceLink || news.source_link) : "";
+      if (source === "network" && sourceLink) {
+        return sourceLink;
+      }
+      const contentId = news && (news.contentId || news.content_id) ? String(news.contentId || news.content_id) : "";
+      const siteId = news && (news.siteId || news.site_id) ? String(news.siteId || news.site_id) : "";
+      const url = new URL(NEWS_DETAIL_PATH, NEWS_DETAIL_BASE_URL);
+      if (contentId) {
+        url.searchParams.set("contentId", contentId);
+      }
+      if (siteId) {
+        url.searchParams.set("siteId", siteId);
+      }
+      return url.toString();
+    },
+    handleNewsClick (news) {
+      const targetUrl = this.buildNewsDetailUrl(news);
+      if (!targetUrl) {
+        return;
+      }
+      this.newsFrameUrl = targetUrl;
+      this.newsFrameVisible = true;
+    },
+    closeNewsFrame () {
+      this.newsFrameVisible = false;
+      this.newsFrameUrl = "";
     },
     getMessageContainer () {
       return this.$refs.messageList && this.$refs.messageList.$el;
@@ -525,5 +566,36 @@ export default {
   align-items: center;
   justify-content: center;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
+.news-frame-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #fff;
+}
+
+.news-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.news-frame-back {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 10px);
+  left: 12px;
+  z-index: 61;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
 }
 </style>
