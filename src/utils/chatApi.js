@@ -1,5 +1,6 @@
 const CHAT_AGENT_STREAM_URL = process.env.VUE_APP_CHAT_AGENT_STREAM_URL || "/wxgc/content/mb_api/chat/agent/stream";
 const CHAT_WORKFLOW_STREAM_URL = process.env.VUE_APP_CHAT_WORKFLOW_STREAM_URL || "/wxgc/content/mb_api/chat/stream";
+const CHAT_AGENT_STOP_URL = "/wxgc/content/mb_api/chat/agent/stop";
 const CHAT_ENDPOINT_TYPE = (process.env.VUE_APP_CHAT_ENDPOINT_TYPE || "agent").toLowerCase();
 const CHAT_CONNECT_TIMEOUT_MS = 120000;
 const CHAT_IDLE_TIMEOUT_MS = 120000;
@@ -85,7 +86,7 @@ function coercePayload (value) {
   return null;
 }
 
-function normalizeNewsList (value) {
+function normalizeNewsList (value, cardSource) {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -100,11 +101,13 @@ function normalizeNewsList (value) {
         return {
           title: item.title || item.news_title || item.name || "",
           contentId: item.content_id || item.contentId || "",
-          siteId: item.site_id || item.siteId || ""
+          siteId: item.site_id || item.siteId || "",
+          source: item.source || cardSource || "",
+          sourceLink: item.source_link || item.sourceLink || ""
         };
       }
 
-      return { title: "", contentId: "", siteId: "" };
+      return { title: "", contentId: "", siteId: "", source: cardSource || "", sourceLink: "" };
     })
     .filter(item => item.title);
 }
@@ -133,7 +136,7 @@ function parseJsonFromText (value) {
 
 function applyNewsPayload (normalizedPayload, state, onEvent) {
   state.type = "news";
-  state.newsList = normalizeNewsList(normalizedPayload.news_list);
+  state.newsList = normalizeNewsList(normalizedPayload.news_list, normalizedPayload.source);
   state.done = Boolean(normalizedPayload.done);
   notify(onEvent, {
     type: "news",
@@ -214,6 +217,40 @@ function buildChatUrl (message, sessionId, endpointType) {
   url.searchParams.set("message", message);
   url.searchParams.set("sessionId", sessionId);
   return url.toString();
+}
+
+function buildStopUrl () {
+  return new URL(CHAT_AGENT_STOP_URL, window.location.origin).toString();
+}
+
+// 终止回答接口：POST /agent/stop，参数仅 sessionId
+export async function stopChatReply (sessionId) {
+  const cleanSessionId = typeof sessionId === "string" ? sessionId.trim() : String(sessionId || "").trim();
+  if (!cleanSessionId) {
+    return false;
+  }
+
+  const body = JSON.stringify({ sessionId: cleanSessionId });
+  const url = buildStopUrl();
+  debugLog("stop:request", { sessionId: cleanSessionId, url });
+  try {
+    const response = await window.fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*"
+      },
+      body
+    });
+    debugLog("stop:response", { sessionId: cleanSessionId, status: response.status });
+    return response.ok;
+  } catch (error) {
+    debugLog("stop:error", {
+      sessionId: cleanSessionId,
+      message: error && error.message ? error.message : ""
+    });
+    return false;
+  }
 }
 
 function parseSseEventBlock (block) {

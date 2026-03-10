@@ -17,7 +17,7 @@
 import AppHeader from "./components/AppHeader.vue";
 import ComposerBar from "./components/ComposerBar.vue";
 import MessageList from "./components/MessageList.vue";
-import { createSessionId, sendChatMessage } from "./utils/chatApi";
+import { createSessionId, sendChatMessage, stopChatReply } from "./utils/chatApi";
 import { cancelRecord, offVoiceResult, onVoiceResult, startRecord, stopRecord } from "./utils/appBridge";
 
 const CANCEL_THRESHOLD = 70;
@@ -151,9 +151,11 @@ export default {
         this.currentReplyToken = null;
         return;
       }
+      const requestSessionId = this.sessionId;
       const replyMessageId = this.activeReplyMessageId;
       const stop = this.activeReplyStop;
       this.clearActiveReplyStop();
+      stopChatReply(requestSessionId);
       stop("manual-stop");
       if (replyMessageId) {
         const currentMessage = this.messages.find(item => item.id === replyMessageId);

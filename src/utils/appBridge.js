@@ -14,6 +14,8 @@ const mockVoiceSentences = [
   "今天无锡天气怎么样"
 ];
 const voiceMockEnv = String(process.env.VUE_APP_ENABLE_VOICE_MOCK || "").toLowerCase();
+const NEWS_DETAIL_BASE_URL = process.env.VUE_APP_NEWS_DETAIL_BASE_URL || "https://workbooks.wxrb.com";
+const NEWS_DETAIL_PATH = "/wxgc-h5/article.html";
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
 let mockVoiceTimer = null;
 let mockVoiceTick = 0;
@@ -180,10 +182,38 @@ export function offVoiceResult () {
 }
 
 export function openNewsDetail (news) {
+  const contentId = news && (news.contentId || news.content_id) ? String(news.contentId || news.content_id) : "";
+  const siteId = news && (news.siteId || news.site_id) ? String(news.siteId || news.site_id) : "";
+  const source = news && typeof news.source === "string" ? news.source.toLowerCase() : "";
+  const sourceLink = news && (news.sourceLink || news.source_link) ? String(news.sourceLink || news.source_link) : "";
+  const url = new URL(NEWS_DETAIL_PATH, NEWS_DETAIL_BASE_URL);
+  if (contentId) {
+    url.searchParams.set("contentId", contentId);
+  }
+  if (siteId) {
+    url.searchParams.set("siteId", siteId);
+  }
+  const detailUrl = source === "network" && sourceLink ? sourceLink : url.toString();
+
   if (window.AppBridge && typeof window.AppBridge.openNewsDetail === "function") {
-    return window.AppBridge.openNewsDetail(news);
+    return window.AppBridge.openNewsDetail({
+      ...news,
+      contentId,
+      siteId,
+      source,
+      sourceLink,
+      url: detailUrl
+    });
   }
 
-  console.info("openNewsDetail placeholder", news);
+  if (typeof window !== "undefined" && typeof window.open === "function") {
+    window.open(detailUrl, "_self");
+  }
+  console.info("openNewsDetail placeholder", {
+    ...news,
+    contentId,
+    siteId,
+    url: detailUrl
+  });
   return null;
 }

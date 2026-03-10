@@ -58,7 +58,7 @@ export default {
     return {
       thoughtExpandMap: {},
       thoughtManualMap: {},
-      previousTextMap: {}
+      previousAnswerMap: {}
     };
   },
   watch: {
@@ -70,23 +70,23 @@ export default {
         nextMessages.forEach(message => {
           const id = String(message.id);
           activeIds[id] = true;
-          const previousText = this.previousTextMap[id] || "";
-          const currentText = message && typeof message.text === "string" ? message.text : "";
+          const previousHasAnswer = Boolean(this.previousAnswerMap[id]);
+          const currentHasAnswer = this.hasAnswerContent(message);
           const hasThought = this.hasThoughts(message);
 
           if (!Object.prototype.hasOwnProperty.call(this.thoughtExpandMap, id)) {
-            this.$set(this.thoughtExpandMap, id, hasThought && !currentText);
+            this.$set(this.thoughtExpandMap, id, hasThought && !currentHasAnswer);
           }
           if (!Object.prototype.hasOwnProperty.call(this.thoughtManualMap, id)) {
             this.$set(this.thoughtManualMap, id, false);
           }
 
-          if (!previousText && currentText && hasThought) {
+          if (!previousHasAnswer && currentHasAnswer && hasThought) {
             this.$set(this.thoughtExpandMap, id, false);
             this.$set(this.thoughtManualMap, id, false);
           }
 
-          this.$set(this.previousTextMap, id, currentText);
+          this.$set(this.previousAnswerMap, id, currentHasAnswer);
         });
 
         Object.keys(this.thoughtExpandMap).forEach(id => {
@@ -99,9 +99,9 @@ export default {
             this.$delete(this.thoughtManualMap, id);
           }
         });
-        Object.keys(this.previousTextMap).forEach(id => {
+        Object.keys(this.previousAnswerMap).forEach(id => {
           if (!activeIds[id]) {
-            this.$delete(this.previousTextMap, id);
+            this.$delete(this.previousAnswerMap, id);
           }
         });
       }
@@ -114,13 +114,20 @@ export default {
     hasThoughts (message) {
       return Boolean(message && typeof message.thoughts === "string" && message.thoughts.trim());
     },
+    hasAnswerContent (message) {
+      if (!message) {
+        return false;
+      }
+      const hasText = Boolean(typeof message.text === "string" && message.text.trim());
+      const hasNews = this.isNewsMessage(message) && Array.isArray(message.newsList) && message.newsList.length > 0;
+      return hasText || hasNews;
+    },
     isThoughtExpanded (message) {
       const id = String(message.id);
       if (this.thoughtManualMap[id]) {
         return Boolean(this.thoughtExpandMap[id]);
       }
-      const hasText = Boolean(message && message.text);
-      return Boolean(this.thoughtExpandMap[id] || (this.hasThoughts(message) && !hasText));
+      return Boolean(this.thoughtExpandMap[id] || (this.hasThoughts(message) && !this.hasAnswerContent(message)));
     },
     toggleThought (messageId) {
       const id = String(messageId);
