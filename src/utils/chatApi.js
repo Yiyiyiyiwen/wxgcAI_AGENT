@@ -2,8 +2,8 @@ const CHAT_AGENT_STREAM_URL = process.env.VUE_APP_CHAT_AGENT_STREAM_URL || "/wxg
 const CHAT_WORKFLOW_STREAM_URL = process.env.VUE_APP_CHAT_WORKFLOW_STREAM_URL || "/wxgc/content/mb_api/chat/stream";
 const CHAT_AGENT_STOP_URL = "/wxgc/content/mb_api/chat/agent/stop";
 const CHAT_ENDPOINT_TYPE = (process.env.VUE_APP_CHAT_ENDPOINT_TYPE || "agent").toLowerCase();
-const CHAT_CONNECT_TIMEOUT_MS = 120000;
-const CHAT_IDLE_TIMEOUT_MS = 120000;
+const CHAT_CONNECT_TIMEOUT_MS = 300000;
+const CHAT_IDLE_TIMEOUT_MS = 300000;
 const CHAT_STREAM_MOCK = String(process.env.VUE_APP_CHAT_STREAM_MOCK || "").toLowerCase() === "true";
 const CHAT_STREAM_MOCK_INTERVAL_MS = Number(process.env.VUE_APP_CHAT_STREAM_MOCK_INTERVAL_MS || 120);
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
@@ -138,6 +138,7 @@ function parseJsonFromText (value) {
 function applyNewsPayload (normalizedPayload, state, onEvent) {
   state.type = "news";
   state.newsList = normalizeNewsList(normalizedPayload.news_list, normalizedPayload.source);
+  state.pendingStructuredText = "";
   state.done = Boolean(normalizedPayload.done);
   notify(onEvent, {
     type: "news",
@@ -154,6 +155,29 @@ function tryApplyNewsFromAccumulatedText (state, onEvent) {
   }
   applyNewsPayload(maybePayload, state, onEvent);
   return true;
+}
+
+function hasNewsCardMarker (value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return value.indexOf("wxgc_news_card") > -1 || value.indexOf("\"news_list\"") > -1;
+}
+
+function flushPendingStructuredTextAsPlainText (state, onEvent, doneFlag) {
+  if (!state.pendingStructuredText) {
+    return;
+  }
+  state.type = "text";
+  state.text += state.pendingStructuredText;
+  state.pendingStructuredText = "";
+  notify(onEvent, {
+    type: "text",
+    text: normalizeText(state.text),
+    newsList: state.newsList,
+    thoughts: normalizeText(state.thoughts),
+    done: Boolean(doneFlag)
+  });
 }
 
 function notify (onEvent, payload) {
@@ -182,11 +206,31 @@ function applyPayload (payload, state, onEvent) {
   }
 
   if (!emitted && hasText) {
-    state.type = "text";
-    state.text += normalizedPayload.text;
-    // 兼容后端把新闻 JSON 以 text 分片流式下发的场景。
-    if (tryApplyNewsFromAccumulatedText(state, onEvent)) {
-      emitted = true;
+    const incomingText = normalizedPayload.text;
+    const pendingBuffer = state.pendingStructuredText || "";
+    const nextPendingBuffer = pendingBuffer + incomingText;
+    const shouldBufferAsStructured = Boolean(pendingBuffer)
+      || hasNewsCardMarker(nextPendingBuffer)
+      || (!state.text && /^\s*\{/.test(nextPendingBuffer));
+
+    if (shouldBufferAsStructured) {
+      state.pendingStructuredText = nextPendingBuffer;
+      const maybePayload = parseJsonFromText(state.pendingStructuredText);
+      if (maybePayload && maybePayload.status === "wxgc_news_card") {
+        applyNewsPayload(maybePayload, state, onEvent);
+        emitted = true;
+      } else if (!hasNewsCardMarker(state.pendingStructuredText) && state.pendingStructuredText.length > 240) {
+        // 非新闻结构化文本，回退为普通文本展示，避免误判后长期不渲染。
+        flushPendingStructuredTextAsPlainText(state, onEvent, normalizedPayload.done);
+        emitted = true;
+      }
+    } else {
+      state.type = "text";
+      state.text += incomingText;
+      // 兼容后端把新闻 JSON 以 text 分片流式下发的场景。
+      if (tryApplyNewsFromAccumulatedText(state, onEvent)) {
+        emitted = true;
+      }
     }
   }
 
@@ -201,6 +245,14 @@ function applyPayload (payload, state, onEvent) {
   }
 
   if (normalizedPayload.done) {
+    if (state.pendingStructuredText) {
+      const maybePayload = parseJsonFromText(state.pendingStructuredText);
+      if (maybePayload && maybePayload.status === "wxgc_news_card") {
+        applyNewsPayload(maybePayload, state, onEvent);
+      } else {
+        flushPendingStructuredTextAsPlainText(state, onEvent, true);
+      }
+    }
     state.done = true;
     notify(onEvent, {
       type: state.type,
@@ -324,6 +376,7 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
   const state = {
     type: "text",
     text: "",
+    pendingStructuredText: "",
     thoughts: "",
     newsList: [],
     done: false,
@@ -400,10 +453,59 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
     let connectTimer = null;
     let idleTimer = null;
     let responseStarted = false;
+    let fallbackStage1Timer = null;
+    let fallbackStage2Timer = null;
+    let firstPayloadAt = 0;
+    let latestPayloadAt = 0;
+    const requestStartAt = Date.now();
 
     debugLog("request:start", { sessionId, message });
+    debugLog("fallback:stage-start", {
+      sessionId,
+      stage: "connecting",
+      hint: "正在连接服务"
+    });
+
+    const clearFallbackTimers = () => {
+      if (fallbackStage1Timer) {
+        window.clearTimeout(fallbackStage1Timer);
+        fallbackStage1Timer = null;
+      }
+      if (fallbackStage2Timer) {
+        window.clearTimeout(fallbackStage2Timer);
+        fallbackStage2Timer = null;
+      }
+    };
+
+    fallbackStage1Timer = window.setTimeout(() => {
+      if (settled || responseStarted) {
+        return;
+      }
+      debugLog("fallback:stage", {
+        sessionId,
+        stage: "connecting-slow",
+        elapsedMs: Date.now() - requestStartAt,
+        hint: "连接较慢，正在重试握手"
+      });
+    }, 8000);
+
+    fallbackStage2Timer = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      const now = Date.now();
+      debugLog("fallback:stage", {
+        sessionId,
+        stage: responseStarted ? "streaming-long" : "connecting-long",
+        elapsedMs: now - requestStartAt,
+        firstPayloadDelayMs: firstPayloadAt ? firstPayloadAt - requestStartAt : null,
+        idleSinceLastPayloadMs: latestPayloadAt ? now - latestPayloadAt : null,
+        hint: responseStarted ? "正在持续生成，请稍候" : "连接时间较长，请稍候"
+      });
+    }, 30000);
 
     const cleanup = () => {
+      clearFallbackTimers();
       if (connectTimer) {
         window.clearTimeout(connectTimer);
         connectTimer = null;
@@ -474,6 +576,17 @@ export async function sendChatMessage ({ message, sessionId, onEvent, onRegister
         window.clearTimeout(connectTimer);
         connectTimer = null;
       }
+      const now = Date.now();
+      if (!firstPayloadAt) {
+        firstPayloadAt = now;
+        debugLog("fallback:stage", {
+          sessionId,
+          stage: "first-payload",
+          elapsedMs: firstPayloadAt - requestStartAt,
+          hint: "已收到首包"
+        });
+      }
+      latestPayloadAt = now;
       scheduleIdleTimeout();
       applyPayload(payload, state, onEvent);
       if (state.done) {

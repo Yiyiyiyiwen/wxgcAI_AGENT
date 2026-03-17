@@ -477,7 +477,16 @@ export default {
       this.recordState = "recording";
       this.startMockRecordLevel();
       this.debugLog("voice:start");
-      await startRecord();
+      try {
+        await startRecord();
+      } catch (error) {
+        this.debugLog("voice:start-error", {
+          message: error && error.message ? error.message : ""
+        });
+        this.recordState = "idle";
+        this.recordStartAt = 0;
+        this.stopMockRecordLevel();
+      }
     },
     handleRecordMove (deltaY) {
       if (this.recordState === "idle") {

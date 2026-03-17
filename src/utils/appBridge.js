@@ -17,6 +17,9 @@ const voiceMockEnv = String(process.env.VUE_APP_ENABLE_VOICE_MOCK || "").toLower
 const NEWS_DETAIL_BASE_URL = process.env.VUE_APP_NEWS_DETAIL_BASE_URL || "https://workbooks.wxrb.com";
 const NEWS_DETAIL_PATH = "/wxgc-h5/article.html";
 const DEBUG_ENV = String(process.env.VUE_APP_DEBUG_LOG || "").toLowerCase();
+const BRIDGE_READY_MAX_WAIT_MS = 2500;
+const BRIDGE_READY_POLL_MS = 120;
+const START_RETRY_DELAY_MS = 900;
 let mockVoiceTimer = null;
 let mockVoiceTick = 0;
 let mockVoiceFinalText = "";
@@ -72,6 +75,75 @@ function emitVoiceResult (text, isFinal) {
   }
 }
 
+function getStartVoiceInvoker () {
+  if (window.NativeBridge && typeof window.NativeBridge.startVoice === "function") {
+    return {
+      source: "native",
+      invoke: () => window.NativeBridge.startVoice()
+    };
+  }
+  if (window.AppBridge && typeof window.AppBridge.startRecord === "function") {
+    return {
+      source: "appbridge",
+      invoke: () => window.AppBridge.startRecord()
+    };
+  }
+  return null;
+}
+
+async function waitForStartVoiceInvoker () {
+  const startAt = Date.now();
+  while (Date.now() - startAt < BRIDGE_READY_MAX_WAIT_MS) {
+    const invoker = getStartVoiceInvoker();
+    if (invoker) {
+      return invoker;
+    }
+    await wait(BRIDGE_READY_POLL_MS);
+  }
+  return null;
+}
+
+function shouldRetryStartByResult (result) {
+  if (result === false || result === 0 || result === "0") {
+    return true;
+  }
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  if (result.success === false) {
+    return true;
+  }
+  if (typeof result.code === "number" && result.code !== 0) {
+    return true;
+  }
+  return false;
+}
+
+async function callStartVoiceWithRetry (invoker) {
+  if (!invoker) {
+    return null;
+  }
+
+  try {
+    debugLog("voice:start-call", { source: invoker.source, phase: "primary" });
+    const firstResult = await Promise.resolve(invoker.invoke());
+    if (!shouldRetryStartByResult(firstResult)) {
+      return firstResult;
+    }
+    debugLog("voice:start-call", { source: invoker.source, phase: "retry-pending", firstResult });
+  } catch (error) {
+    debugLog("voice:start-call", {
+      source: invoker.source,
+      phase: "primary-error",
+      message: error && error.message ? error.message : ""
+    });
+  }
+
+  await wait(START_RETRY_DELAY_MS);
+  debugLog("voice:start-call", { source: invoker.source, phase: "retry" });
+  return invoker.invoke();
+}
+
 function clearMockVoiceTimer () {
   if (mockVoiceTimer) {
     window.clearInterval(mockVoiceTimer);
@@ -98,14 +170,17 @@ function startMockVoiceStream () {
 }
 
 export async function startRecord () {
-  if (window.NativeBridge && typeof window.NativeBridge.startVoice === "function") {
-    debugLog("voice:start-native");
-    return window.NativeBridge.startVoice();
+  let invoker = getStartVoiceInvoker();
+  if (!invoker) {
+    debugLog("voice:bridge-wait", { waitMs: BRIDGE_READY_MAX_WAIT_MS });
+    invoker = await waitForStartVoiceInvoker();
   }
-  if (window.AppBridge && typeof window.AppBridge.startRecord === "function") {
-    debugLog("voice:start-appbridge");
-    return window.AppBridge.startRecord();
+
+  if (invoker) {
+    debugLog("voice:start-bridge-ready", { source: invoker.source });
+    return callStartVoiceWithRetry(invoker);
   }
+
   if (isVoiceMockEnabled()) {
     startMockVoiceStream();
     debugLog("voice:start-mock");
