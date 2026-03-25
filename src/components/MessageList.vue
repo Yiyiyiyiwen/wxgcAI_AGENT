@@ -249,27 +249,6 @@ export default {
   white-space: normal;
 }
 
-.rich-text::v-deep p,
-.rich-text::v-deep div,
-.rich-text::v-deep blockquote,
-.rich-text::v-deep ul,
-.rich-text::v-deep ol {
-  margin: 0 0 8px;
-}
-
-.rich-text::v-deep p:last-child,
-.rich-text::v-deep div:last-child,
-.rich-text::v-deep blockquote:last-child,
-.rich-text::v-deep ul:last-child,
-.rich-text::v-deep ol:last-child {
-  margin-bottom: 0;
-}
-
-.rich-text::v-deep a {
-  color: #1669f2;
-  text-decoration: underline;
-}
-
 .loading-dots {
   height: 26px;
   display: inline-flex;
