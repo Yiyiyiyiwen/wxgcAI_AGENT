@@ -34,7 +34,8 @@
             </span>
           </button>
         </div>
-        <div v-else-if="message.role === 'assistant'" class="text rich-text" v-html="formatAssistantText(message.text)">
+        <div v-else-if="message.role === 'assistant'" class="text rich-text" v-html="formatAssistantText(message.text)"
+          @click="handleAssistantContentClick">
         </div>
         <div v-else class="text">{{ message.text }}</div>
       </div>
@@ -137,6 +138,22 @@ export default {
     handleNewsClick (news) {
       this.$emit("news-click", news);
     },
+    handleAssistantContentClick (event) {
+      const anchor = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+      if (!anchor) {
+        return;
+      }
+      const href = anchor.getAttribute("href");
+      if (!href || href.startsWith("#")) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      this.$emit("content-link-click", {
+        href,
+        label: (anchor.textContent || "").trim()
+      });
+    },
     formatAssistantText (value) {
       return sanitizeRichText(value);
     }
@@ -162,6 +179,11 @@ export default {
 
 .message-row.is-assistant {
   justify-content: flex-start;
+}
+
+.message-row.is-assistant .bubble {
+  width: 100%;
+  max-width: 100%;
 }
 
 .bubble {

@@ -1,7 +1,8 @@
 <template>
   <div class="page">
     <!-- <AppHeader /> -->
-    <MessageList ref="messageList" :messages="messages" @news-click="handleNewsClick" />
+    <MessageList ref="messageList" :messages="messages" @news-click="handleNewsClick"
+      @content-link-click="handleContentLinkClick" />
     <button v-if="showScrollBottom" class="scroll-bottom-btn" type="button" aria-label="滚动到底部"
       @click="scrollToBottom(true)">
       <van-icon name="arrow-down" />
@@ -13,6 +14,9 @@
     <section v-if="newsFrameVisible" class="news-frame-layer">
       <button class="news-frame-back" type="button" aria-label="关闭新闻详情" @click="closeNewsFrame">
         <van-icon name="arrow-left" />
+      </button>
+      <button class="news-frame-return" type="button" aria-label="返回会话" @click="closeNewsFrame">
+        返回会话
       </button>
       <iframe class="news-frame" :src="newsFrameUrl" title="新闻详情"></iframe>
     </section>
@@ -72,8 +76,12 @@ export default {
     this.replyTokenSeed = 0;
     this.currentReplyToken = null;
     this.waitFinalVoiceResolver = null;
+    this.newsFrameHistoryPushed = false;
   },
   mounted () {
+    window.addEventListener("popstate", this.handleWindowPopState);
+    window.addEventListener("pageshow", this.handleWindowPageShow);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
     window.addEventListener("record-volume", this.handleRecordVolume);
     onVoiceResult(this.handleVoiceResult);
     this.$nextTick(() => {
@@ -85,6 +93,9 @@ export default {
     });
   },
   beforeDestroy () {
+    window.removeEventListener("popstate", this.handleWindowPopState);
+    window.removeEventListener("pageshow", this.handleWindowPageShow);
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     window.removeEventListener("record-volume", this.handleRecordVolume);
     offVoiceResult();
     const container = this.getMessageContainer();
@@ -212,15 +223,90 @@ export default {
     },
     handleNewsClick (news) {
       const targetUrl = this.buildNewsDetailUrl(news);
+      this.openNewsFrame(targetUrl, "news-card");
+    },
+    handleContentLinkClick (payload) {
+      const targetUrl = payload && payload.href ? String(payload.href).trim() : "";
+      this.openNewsFrame(targetUrl, "content-link");
+    },
+    openNewsFrame (targetUrl, source) {
       if (!targetUrl) {
         return;
       }
+      this.debugLog("news-frame:open-request", {
+        targetUrl,
+        source: source || "",
+        historyLength: window.history.length,
+        historyState: window.history.state || null,
+        currentUrl: window.location.href
+      });
+      if (!this.newsFrameVisible) {
+        this.pushNewsFrameHistory();
+      }
       this.newsFrameUrl = targetUrl;
       this.newsFrameVisible = true;
+      this.debugLog("news-frame:open", {
+        targetUrl,
+        source: source || "",
+        historyLength: window.history.length,
+        historyState: window.history.state || null
+      });
     },
-    closeNewsFrame () {
+    pushNewsFrameHistory () {
+      const nextState = {
+        ...(window.history.state || {}),
+        __wxgcNewsFrame: true
+      };
+      window.history.pushState(nextState, "");
+      this.newsFrameHistoryPushed = true;
+      this.debugLog("news-frame:history-push", {
+        historyLength: window.history.length,
+        historyState: nextState,
+        currentUrl: window.location.href
+      });
+    },
+    closeNewsFrame (fromHistory) {
+      const shouldSyncHistory = !fromHistory && this.newsFrameVisible && this.newsFrameHistoryPushed;
+      this.debugLog("news-frame:close-request", {
+        fromHistory: Boolean(fromHistory),
+        shouldSyncHistory,
+        historyLength: window.history.length,
+        historyState: window.history.state || null,
+        currentUrl: window.location.href
+      });
       this.newsFrameVisible = false;
       this.newsFrameUrl = "";
+      this.newsFrameHistoryPushed = false;
+      this.debugLog("news-frame:close", { fromHistory: Boolean(fromHistory) });
+    },
+    handleWindowPopState (event) {
+      this.debugLog("news-frame:popstate", {
+        historyLength: window.history.length,
+        historyState: window.history.state || null,
+        eventState: event && event.state ? event.state : null,
+        newsFrameVisible: this.newsFrameVisible,
+        currentUrl: window.location.href
+      });
+      if (!this.newsFrameVisible) {
+        return;
+      }
+      this.closeNewsFrame(true);
+    },
+    handleWindowPageShow (event) {
+      this.debugLog("page:pageshow", {
+        persisted: Boolean(event && event.persisted),
+        historyLength: window.history.length,
+        historyState: window.history.state || null,
+        currentUrl: window.location.href
+      });
+    },
+    handleVisibilityChange () {
+      this.debugLog("page:visibilitychange", {
+        visibilityState: document.visibilityState,
+        historyLength: window.history.length,
+        historyState: window.history.state || null,
+        currentUrl: window.location.href
+      });
     },
     getMessageContainer () {
       return this.$refs.messageList && this.$refs.messageList.$el;
@@ -606,5 +692,25 @@ export default {
   align-items: center;
   justify-content: center;
   font-size: 18px;
+}
+
+.news-frame-return {
+  position: absolute;
+  right: 14px;
+  bottom: calc(env(safe-area-inset-bottom) + 18px);
+  z-index: 61;
+  min-width: 104px;
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.82);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.24);
+  font-size: 15px;
+  font-weight: 600;
 }
 </style>

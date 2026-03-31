@@ -40,7 +40,6 @@ const ALLOWED_STYLES = new Set([
 const SAFE_URL_PATTERN = /^(https?:|mailto:|tel:|#)/i;
 const MARKDOWN_LINK_PATTERN = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const PLAIN_URL_PATTERN = /(^|[\s(（])((https?:\/\/|mailto:|tel:)[^\s<>\u3000]+)/gi;
-const FOOTNOTE_DEFINITION_PATTERN = /^\[\^([^\]]+)\]:\s*(.+)$/gm;
 const FOOTNOTE_REFERENCE_PATTERN = /\[\^([^\]]+)\]/g;
 
 function escapeHtml(value) {
@@ -163,29 +162,43 @@ function looksLikeMarkdown(value) {
 }
 
 function transformFootnotes(value) {
+  const lines = value.split(/\r?\n/);
+  const bodyLines = [];
   const footnotes = [];
-  const body = value.replace(FOOTNOTE_DEFINITION_PATTERN, (match, id, content) => {
-    footnotes.push({ id, content: content.trim() });
-    return "";
+  let currentFootnote = null;
+
+  lines.forEach(line => {
+    const definitionMatch = line.match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+    if (definitionMatch) {
+      currentFootnote = {
+        id: definitionMatch[1],
+        content: definitionMatch[2] || ""
+      };
+      footnotes.push(currentFootnote);
+      return;
+    }
+
+    if (currentFootnote && (/^\s{2,}\S/.test(line) || /^\t+\S/.test(line))) {
+      currentFootnote.content += ` ${line.trim()}`;
+      return;
+    }
+
+    currentFootnote = null;
+    bodyLines.push(line);
   });
 
-  const normalizedBody = body.replace(FOOTNOTE_REFERENCE_PATTERN, (match, id) => {
-    return `<sup>[${id}]</sup>`;
-  }).trim();
-
+  const normalizedBody = bodyLines.join("\n").replace(FOOTNOTE_REFERENCE_PATTERN, (match, id) => `<sup>[${id}]</sup>`).trim();
   if (!footnotes.length) {
     return normalizedBody;
   }
 
-  const footnoteBlock = [
+  return [
     normalizedBody,
     "",
     "---",
     "",
-    footnotes.map(item => `- [${item.id}] ${item.content}`).join("\n")
+    footnotes.map(item => `- [${item.id}] ${item.content.trim()}`).join("\n")
   ].filter(Boolean).join("\n");
-
-  return footnoteBlock;
 }
 
 function trimTrailingPunctuation(url) {
@@ -204,7 +217,11 @@ function trimTrailingPunctuation(url) {
 }
 
 function renderMarkdown(value) {
-  const normalizedValue = transformFootnotes(value).replace(PLAIN_URL_PATTERN, (match, prefix, url) => {
+  const normalizedValue = transformFootnotes(value).replace(PLAIN_URL_PATTERN, (match, prefix, url, offset, fullText) => {
+    const previousChar = offset > 0 ? fullText[offset - 1] : "";
+    if ((prefix === "(" || prefix === "（") && previousChar === "]") {
+      return match;
+    }
     const normalizedUrl = trimTrailingPunctuation(url);
     if (prefix) {
       return `${prefix}<${normalizedUrl.url}>${normalizedUrl.trailing}`;
